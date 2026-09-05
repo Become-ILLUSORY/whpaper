@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23.9"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build -trimpath -o whpaper .
+
+      - name: smoke
+        run: |
+          set -euo pipefail
+          ./whpaper -h
+          ./whpaper -v
+          ./whpaper config | head -30
+          ./whpaper history
+          ./whpaper doctor || echo "doctor reported problems (expected on a CI box without noctalia)"

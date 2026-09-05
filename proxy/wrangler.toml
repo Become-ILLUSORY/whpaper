@@ -1,0 +1,17 @@
+name = "whpaper"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# wrangler tail / secret helpers work with this file:
+#   npx wrangler secret put WHPAPER_TOKEN
+#   npx wrangler deploy
+#
+# The plain-curl alternative (no node required) is ./deploy.sh
+
+[vars]
+# Shared secret. Empty means the mirror is open to anyone who knows the URL.
+# Override with:  wrangler secret put WHPAPER_TOKEN   (preferred, encrypted)
+WHPAPER_TOKEN = ""
+
+# Optional: pretend to be a browser UA different from the default.
+# WHPAPER_UA = "Mozilla/5.0"
