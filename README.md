@@ -1,168 +1,301 @@
 # whpaper
 
-给 [Noctalia](https://github.com/noctalia-dev/noctalia) 桌面随机抓 [wallhaven.cc](https://wallhaven.cc) 壁纸并自动切换的小工具。单个静态二进制，纯 Go 标准库，无 CGO、无运行时依赖。
+给 [Noctalia](https://github.com/noctalia-dev/noctalia) 桌面随机换 **wallhaven** 壁纸的小工具。
+单个二进制、零依赖：随机抓一张 → 下载 → 自动切壁纸 → 清理旧的。
 
-- 按你给的搜索条件随机取一张，下载、切壁纸、清理旧图，一条龙
-- 自动跟随 Noctalia 设置的壁纸目录（含浅色/深色分别配置）
-- 中国大陆等访问不了 wallhaven 的网络：可自建 Cloudflare 反代镜像，或用 `best_cf_domain` 优选 IP 直连
-- 去重、失败自动换候选、预取缓存、systemd 定时轮换
-- 不转码：wallhaven 给的就是 jpg/png，Noctalia 原生支持
+- 一条命令换一张，或交给 systemd 每半小时自动换
+- 想搜什么类型就用什么类型（动漫 / 风景 / 赛博朋克 / 4K / 竖屏 / 某颜色…）
+- 自动跟随你在 Noctalia 里设置的壁纸文件夹
+- 中国大陆访问不了 wallhaven？内置「优选 IP 直连」和「Cloudflare 反代」两种解法
 
-## 安装
+---
 
-从 Release 下载对应架构的包，解压出 `whpaper` 放进 `PATH`：
+## 30 秒上手
 
 ```bash
+# 1) 安装（Linux / macOS，自动识别架构）
 curl -fsSL https://raw.githubusercontent.com/Become-ILLUSORY/whpaper/main/scripts/install.sh | bash
+
+# 2) 体检：确认能找到 Noctalia、壁纸目录、网络通不通
+whpaper doctor
+
+# 3) 换一张
+whpaper next
 ```
 
-脚本会识别系统架构、校验 sha256、装到 `~/.local/bin/whpaper`。
+看到桌面壁纸变了、右下角弹个「壁纸已切换 · 动漫 · 3840 × 2160」就成了。
+`~/.local/bin` 不在 PATH 的话：`export PATH="$HOME/.local/bin:$PATH"`。
 
-## 快速开始
+---
+
+## 我想搜特定类型的壁纸，怎么弄？
+
+**核心就一句话：`whpaper next` 后面加几个参数。** 下面是常见需求，直接抄：
+
+| 你想要的 | 命令 |
+|---|---|
+| 只要**动漫** | `whpaper next -categories 010` |
+| 动漫 + 通用（不要真人） | `whpaper next -categories 110` |
+| 搜关键词「赛博朋克」 | `whpaper next -q "cyberpunk"` |
+| 搜「原神」 | `whpaper next -q "genshin"` |
+| 搜「雨 夜景」 | `whpaper next -q "rain night"` |
+| 只要 **4K** | `whpaper next -resolutions 3840x2160` |
+| 1080P / 2K / 4K 都行 | `whpaper next -resolutions 1920x1080,2560x1440,3840x2160` |
+| **至少** 2K（更大的也要） | `whpaper next -atleast 2560x1440` |
+| 竖屏（手机/带鱼屏竖着） | `whpaper next -ratios 9x16` |
+| 超宽屏 | `whpaper next -ratios 32x9` |
+| 只要 16:9 | `whpaper next -ratios 16x9` |
+| 主色调是**蓝**的 | `whpaper next -colors 0000ff` |
+| 挑**收藏最多**的（更好看） | `whpaper next -sorting favorites` |
+| 挑**最近上传**的 | `whpaper next -sorting date_added` |
+| 只要安全内容（默认就是） | `whpaper next -purity 100` |
+
+参数可以**叠加**，比如「只要动漫、4K、赛博朋克、按收藏排序」：
 
 ```bash
-whpaper doctor          # 体检：noctalia、目录、网络是否就绪
-whpaper next            # 随机换一张
-whpaper next -v         # 带调试日志
-whpaper config -init    # 生成默认配置文件（可选，零配置也能跑）
-whpaper install -interval 30m   # 装 systemd 用户定时器，每 30 分钟自动换
+whpaper next -categories 010 -resolutions 3840x2160 -q "cyberpunk" -sorting favorites
 ```
 
-能直连 wallhaven 的话，`whpaper next` 开箱即用，不需要任何配置。
+### 三个最容易懵的开关（大白话）
 
-## 命令
+**`-categories`（内容分类）** —— 三位开关，顺序固定是 `通用 / 动漫 / 真人`，`1`=要、`0`=不要：
 
-| 命令 | 作用 |
+| 值 | 含义 |
 |---|---|
-| `next` | 抓一张随机壁纸、下载、切换（默认命令） |
-| `prefetch` | 只把下一张下到暂存目录，不切换 |
-| `watch` | 前台常驻，按 `-interval` 轮换 |
-| `probe` | 测各镜像/优选 IP 的连通与延迟，`-save` 写回配置 |
-| `config` | 查看生效配置；`-init` 写默认文件 |
-| `history` | 最近切换记录 |
-| `doctor` | 环境与网络体检 |
-| `install` / `uninstall` | 安装 / 卸载 systemd 用户定时器 |
+| `010` | 只要动漫 |
+| `110` | 通用 + 动漫（不要真人） |
+| `001` | 只要真人 |
+| `111` | 全都要 |
+| `100` | 只要通用（风景/建筑等） |
 
-常用参数：`-dir` `-keep` `-q` `-resolutions` `-atleast` `-categories` `-purity` `-silent` `-v`。
-完整列表见 `whpaper help`。
+**`-purity`（尺度）** —— 三位开关，顺序 `安全 / 擦边 / 露骨`：
 
-## 配置
+| 值 | 含义 |
+|---|---|
+| `100` | 只要安全（**默认**，推荐） |
+| `110` | 安全 + 擦边 |
+| `111` | 全部（含露骨，需登录 API key） |
 
-零配置可用。需要时用 `whpaper config -init` 生成 `~/.config/whpaper/config.json`，文件里只有几个常用项：
+> ⚠️ 这俩必须是**三位**（`100`、`010`）。写成 `-purity 1` 会被 wallhaven 直接拒绝（返回 500）。
+
+**分辨率：`-resolutions` vs `-atleast` 二选一**
+- `-resolutions`：**精确**匹配列表里的尺寸（逗号=多选一），保证像素正好。
+- `-atleast`：**至少**这么大，更大的也要（结果池更大）。
+- 两个都填时 `-resolutions` 优先。想「越大越好」用 `-atleast`，想「正好 4K」用 `-resolutions`。
+
+### 想每次都生效？写进配置文件
+
+老敲参数烦？把口味写进 `~/.config/whpaper/config.json` 的 `search` 段，以后直接 `whpaper next` 就行：
 
 ```json
 {
-  "endpoints": ["https://wallhaven.cc"],
   "search": {
     "sorting": "random",
     "purity": "100",
-    "categories": "110",
-    "ratios": "16x9",
-    "resolutions": "1920x1080,2560x1440,3840x2160"
-  },
-  "directory": "",
-  "keep": 40,
-  "notify": true,
-  "best_cf_domain": ""
+    "categories": "010",
+    "resolutions": "3840x2160",
+    "q": "cyberpunk",
+    "ratios": "16x9"
+  }
 }
 ```
 
-| 键 | 说明 |
-|---|---|
-| `endpoints` | 依次尝试的 API 基址。被墙就把自建镜像放第一个（见下） |
-| `token` | 镜像的访问口令（自建镜像才需要，见 proxy/） |
-| `api_key` | wallhaven 账号 API key，**只有要 NSFW 或更高限额才需要**，可留空 |
-| `search` | 搜索参数，见下表 |
-| `directory` | 留空 = 自动跟随 Noctalia；填了则固定到该目录 |
-| `keep` | 本地保留多少张，多出的按时间删除 |
-| `notify` | 换成功后发桌面通知 |
-| `best_cf_domain` | 优选 IP 直连：见下 |
+命令行参数**临时覆盖**配置文件，两者随时混用。
 
-优先级：**命令行参数 > `WHPAPER_*` 环境变量 > 配置文件 > 内置默认**。
+---
 
-环境变量：`WHPAPER_ENDPOINT` `WHPAPER_TOKEN` `WHPAPER_API_KEY` `WHPAPER_DIR` `WHPAPER_KEEP` `WHPAPER_BEST_CF_DOMAIN` `WHPAPER_PROXY` `WHPAPER_CONNECTOR` `WHPAPER_NO_APPLY` `WHPAPER_AUTO_RESOLUTION` `WHPAPER_POST_APPLY_HOOK` `NOCTALIA_BIN`。
+## 让它自动换
 
-## 与 Noctalia 的目录联动
-
-`directory` 留空时，whpaper 按 Noctalia 自己的优先级解析壁纸目录：
-
-1. `noctalia config export`（合并后的完整配置，最准）
-2. 回退：读 `~/.config/noctalia/*.toml` + **`~/.local/state/noctalia/settings.toml`**（GUI/IPC 改的设置落在这里，优先级最高）
-3. 按当前主题模式选 `directory_light` / `directory_dark` / `directory`
-4. 都没有 → XDG Pictures
-
-值里的 `~`、`$HOME`、`$XDG_*`、`$VAR` 都会像 Noctalia 一样展开。
-
-> Noctalia 自身也支持定时轮换（`[wallpaper.automation]`），但那是从**本地文件夹**里轮。whpaper 的价值是**持续从 wallhaven 拉新图**进这个文件夹再切换，两者可叠加。
-
-## 中国大陆访问
-
-wallhaven 在 CN 不可直连，两条路（可叠加）：
-
-### 1. 自建反代镜像（推荐）
-
-`proxy/` 下是一个 Cloudflare Worker，只放行 wallhaven 的固定路径前缀，并把 JSON 里的图片域名改写成你的镜像域名。部署见 [proxy/README.md](proxy/README.md)。部署后：
-
-```json
-{ "endpoints": ["https://wallpaper.example.com", "https://wallhaven.cc"], "token": "你的口令" }
+**方式一：systemd 定时（推荐）**
+```bash
+whpaper install -interval 30m        # 每 30 分钟自动换一张
+systemctl --user list-timers | grep whpaper   # 查看
+whpaper uninstall                    # 卸载定时
 ```
 
-### 2. 优选 IP 直连（`best_cf_domain`）
+**方式二：桌面快捷键**（niri 示例，其它 WM 同理）
+```ini
+Bind = CTRL SHIFT, W, exec, whpaper next
+```
 
-如果你有一批能直连 Cloudflare 的 IP（例如自己的 `best.example.com` 解析到这些 IP），不必反代：
+**方式三：前台常驻**（临时跑跑）
+```bash
+whpaper watch -interval 15m
+```
+
+> Noctalia 自带的 `[wallpaper.automation]` 只能在**已有文件夹**里轮播；whpaper 是**持续从网上抓新图**，两者互补：whpaper 负责往目录里补新壁纸。
+
+---
+
+## 壁纸存哪了？
+
+默认**自动跟随 Noctalia** 的设置（读取 `noctalia config export` + `~/.local/state/noctalia/settings.toml` 里的 `[wallpaper] directory`，浅色/深色目录也会按当前主题选）。想手动指定：
+
+```bash
+whpaper next -dir ~/Wallpapers
+# 或写进 config.json： "directory": "~/Wallpapers"
+```
+
+`whpaper doctor` 会打印它实际探测到的目录，确认对不对。
+
+---
+
+## 中国大陆打不开 wallhaven？
+
+wallhaven 在国内直连基本废。三种解法，任选：
+
+### 方案 A：优选 IP 直连（最简单，推荐）
+如果你有一批能直连 Cloudflare 的 IP（比如自己的 `best.example.com` 解析到这些 IP），填进配置即可，**不用搭任何服务**：
 
 ```json
 { "best_cf_domain": "best.example.com" }
 ```
 
-whpaper 会解析该域名的 A/AAAA 记录，用这些 IP 去拨号，同时保持真实 SNI/Host（证书照常校验）。这对 `wallhaven.cc` 和镜像域名都生效。
+whpaper 会用这些 IP 去连 wallhaven，同时保持正确的域名和证书校验。支持**多个域名**（合并成一个 IP 池）：
 
-两个细节：
-
-- **解析走 DoH 兜底**：域名挂了几十个 A 记录时，本机 resolver（glibc / systemd-resolved）常只回两三个。whpaper 会同时用 DoH（AliDNS / Cloudflare / Google，可用 `WHPAPER_DOH` 覆盖）拉取完整记录并与系统结果合并，保证拿到整池。
-- **按延迟排序拨号**：启动时并行测一遍池内 IP 的握手延迟（缓存 10 分钟），之后**永远先拨最快的**，慢/不通的垫底兜底，避免随机踩到烂 IP。
-
-`whpaper probe` 会逐个测这批 IP 的握手延迟并排序打印。
-
-### 3. 普通代理
-
-`WHPAPER_PROXY=http://127.0.0.1:7890` 或系统 `HTTPS_PROXY` 也支持（仅 http/https）。
-
-## 搜索参数（实测结论）
-
-| 参数 | 含义 | 注意 |
-|---|---|---|
-| `sorting` | `random` / `relevance` / `date_added` / `views` / `favorites` / `toplist` | |
-| `order` | `asc` / `desc` | |
-| `purity` | 3 位掩码 `SFW/Sketchy/NSFW` | `100`=纯SFW，`110`=含擦边。**`purity=1` 会 500**，必须三位 |
-| `categories` | 3 位掩码 `General/Anime/People` | `010`=只要动漫，`110`=通用+动漫 |
-| `resolutions` | 逗号分隔的**精确**分辨率 | 单数 `resolution` 无效 |
-| `atleast` | 最小分辨率 | 与 `resolutions` 二选一 |
-| `ratios` | 宽高比 `16x9` 等 | |
-| `colors` | 主色调 hex | `42413c` 或 `random` |
-| `q` | 关键词 | |
-| `topRange` | `1d`/`1w`/`1M`/`1y`/`all` | 仅 `sorting=toplist*` |
-
-其它：匿名默认只看 SFW；匿名限流 45 次/分钟（响应头 `x-ratelimit-remaining`）；图片直链在 `w.wallhaven.cc`，无防盗链、支持 Range、CF 缓存 30 天。
-
-## 快捷键绑定
-
-Noctalia 的 launcher / 合成器里绑一条命令即可手动换：
-
-```
-whpaper next
+```json
+{ "best_cf_domain": ["best.example.com", "best2.example.com"] }
 ```
 
-niri 示例：`bind = { mod = "Mod"; key = "W"; action = "Execute"; args = ["whpaper", "next"]; }`
+- 解析时会自动走 DoH 兜底，避免本机 DNS 把几十个 IP 截断成几个。
+- 启动时并行测一遍这批 IP 的延迟，**永远先连最快的**，坏 IP 自动垫底。
+- `whpaper probe` 能看到每个 IP 的延迟和「池子健康度」（多少个可用/失效）。
+
+命令行临时用：`whpaper next -best-cf best.example.com`
+
+### 方案 B：自建 Cloudflare 反代
+没有优选 IP、但有自己的域名和 Cloudflare 账号：部署一个反代 Worker（见 [`proxy/`](proxy/)），然后把域名填进 `endpoints`：
+
+```json
+{ "endpoints": ["https://wallpaper.example.com", "https://wallhaven.cc"] }
+```
+
+### 方案 C：普通代理
+```bash
+HTTPS_PROXY=http://127.0.0.1:7890 whpaper next
+```
+
+> 实测：优选 IP 直连 wallhaven 往往比自建反代还快（少一层 Worker 开销）。能配方案 A 就优先 A。
+
+---
+
+## 全部命令
+
+| 命令 | 作用 |
+|---|---|
+| `whpaper next` | 抓一张、下载、切换（默认命令） |
+| `whpaper prefetch` | 提前下载一张到缓存，不切换（配合离线瞬切） |
+| `whpaper watch` | 前台常驻，按 `-interval` 定时换 |
+| `whpaper probe` | 测各端点 / 优选 IP 的延迟，报告最快 |
+| `whpaper doctor` | 体检：Noctalia、目录、网络 |
+| `whpaper config` | 看生效配置；`-init` 生成默认配置文件 |
+| `whpaper history` | 最近换过的壁纸 |
+| `whpaper install` / `uninstall` | 装 / 卸 systemd 定时 |
+
+## 全部参数
+
+**常用**
+
+| 参数 | 说明 |
+|---|---|
+| `-q` | 搜索关键词（标签/标题） |
+| `-categories` | 分类掩码 `通用/动漫/真人`，如 `010` |
+| `-purity` | 尺度掩码 `安全/擦边/露骨`，如 `100` |
+| `-resolutions` | 精确分辨率，逗号多选一 |
+| `-atleast` | 至少多大，如 `2560x1440` |
+| `-ratios` | 宽高比，如 `16x9`、`9x16`、`32x9` |
+| `-colors` | 主色调，如 `0000ff` |
+| `-sorting` | `random`/`favorites`/`date_added`/`views`/`toplist` |
+| `-keep` | 本地保留多少张（默认 40） |
+| `-dir` | 壁纸目录 |
+| `-silent` | 不弹通知 |
+| `-v` | 详细日志（排查用） |
+
+**进阶**
+
+| 参数 | 说明 |
+|---|---|
+| `-connector` | 只切某个显示器（如 `DP-1`） |
+| `-no-apply` | 只下载不切换 |
+| `-dry-run` | 只挑不下载，看看会选到哪张 |
+| `-auto-resolution` | 按当前显示器分辨率自动设 `-resolutions` |
+| `-endpoint` | 指定 API 基址（镜像/直连） |
+| `-best-cf` | 优选 IP 域名，逗号可多个 |
+| `-config` | 指定配置文件路径 |
+| `-json` | 输出 JSON（脚本用） |
+| `-force` | 忽略「最近不重复」限制 |
+
+## 配置文件
+
+`~/.config/whpaper/config.json`（`whpaper config -init` 生成）。只有这几个字段，其余走默认值：
+
+```json
+{
+  "endpoints": ["https://wallhaven.cc"],
+  "api_key": "",
+  "token": "",
+  "best_cf_domain": "",
+  "directory": "",
+  "keep": 40,
+  "notify": true,
+  "search": {
+    "sorting": "random",
+    "purity": "100",
+    "categories": "110",
+    "ratios": "16x9",
+    "resolutions": "1920x1080,2560x1440,3840x2160",
+    "atleast": "",
+    "colors": "",
+    "q": ""
+  }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `endpoints` | API 基址列表，按顺序试。国内把镜像/优选放前面 |
+| `api_key` | wallhaven 账号 key，**只有要 NSFW 时才需要**（[wallhaven.cc → API Interface](https://wallhaven.cc/settings/account)） |
+| `token` | 自建反代的访问口令（方案 B 才有） |
+| `best_cf_domain` | 优选 IP 域名，字符串或数组 |
+| `directory` | 留空 = 自动跟随 Noctalia |
+| `keep` | 本地保留张数 |
+| `notify` | 是否弹通知 |
+| `search` | 默认搜索口味，等价于上面那些参数 |
+
+优先级：**命令行 > 环境变量 > 配置文件 > 内置默认**。
+
+### 环境变量
+
+适合 systemd / 脚本：`WHPAPER_ENDPOINT`、`WHPAPER_TOKEN`、`WHPAPER_API_KEY`、`WHPAPER_DIR`、`WHPAPER_KEEP`、`WHPAPER_CONNECTOR`、`WHPAPER_BEST_CF_DOMAIN`、`WHPAPER_PROXY`、`WHPAPER_NO_APPLY=1`、`WHPAPER_NOTIFY=0`、`WHPAPER_AUTO_RESOLUTION=1`、`WHPAPER_DOH`（自定义 DoH 服务器）。
+
+---
 
 ## 开发
 
 ```bash
-go build -trimpath -o whpaper .
-go vet ./...
+go build -trimpath -ldflags "-s -w" -o whpaper .   # 本机编译（纯标准库，无依赖）
+gofmt -l . && go vet ./...
 ```
 
-编译与发布都在 GitHub Actions 完成：推 `v*` 标签触发 `.github/workflows/release.yml`，交叉编译 linux/darwin × amd64/arm64 并建 Release。`ci.yml` 跑 gofmt/vet/build/smoke。
+- `.github/workflows/ci.yml`：push/PR 跑 gofmt + vet + build + 冒烟
+- `.github/workflows/release.yml`：打 `v*` tag → 交叉编译 linux/darwin × amd64/arm64 → GitHub Release
+- `proxy/`：可选的 Cloudflare 反代 Worker（国内访问方案 B）
+
+## 附录：wallhaven API 实测结论
+
+| 参数 | 说明 | 坑 |
+|---|---|---|
+| `purity` | 3 位掩码 `SFW/Sketchy/NSFW` | **`purity=1` 会 500**，必须三位 |
+| `categories` | 3 位掩码 `General/Anime/People` | 同上 |
+| `resolutions` | 精确匹配，逗号=OR | 单数 `resolution` 无效 |
+| `atleast` | 最小尺寸 | 与 `resolutions` 二选一 |
+| `ratios` | 宽高比 | |
+| `colors` | 主色 hex | |
+| `q` | 关键词 | |
+| `sorting` | `random`/`date_added`/`views`/`favorites`/`toplist`/`relevance` | |
+| `seed` | 随机种子 | 匿名请求**不生效**，每次返回新 seed |
+| 限流 | 匿名 45 次/分钟 | 响应头 `x-ratelimit-remaining` |
+| 图片域名 | `path` 指向 `w.wallhaven.cc` | 与 API 不同主机，反代要一起代理 |
 
 ## 许可
 
