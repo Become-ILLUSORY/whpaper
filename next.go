@@ -80,8 +80,8 @@ func runPipeline(ctx context.Context, cfg Config, o *opts, log *logger, count in
 	}
 
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	dl := newHTTPClient(cfg, timeout)
-	api := newHTTPClient(cfg, 15*time.Second)
+	dl := newHTTPClient(cfg, timeout, log)
+	api := newHTTPClient(cfg, 15*time.Second, log)
 	client := NewClient(cfg, api, log)
 
 	var results []Result

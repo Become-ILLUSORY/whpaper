@@ -46,7 +46,7 @@ func testEndpoint(ctx context.Context, cfg Config, base string, log *logger) end
 		Categories:  "010",
 		Resolutions: "1920x1080",
 	}
-	client := NewClient(cfg, newHTTPClient(cfg, 20*time.Second), log)
+	client := NewClient(cfg, newHTTPClient(cfg, 20*time.Second, log), log)
 	start := time.Now()
 	resp, used, err := client.Search(ctx, s, "")
 	if err != nil {
@@ -73,7 +73,7 @@ func testEndpoint(ctx context.Context, cfg Config, base string, log *logger) end
 	if cfg.Token != "" && !isWallhavenHost(hostOf(imgURL)) {
 		req.Header.Set("x-wh-token", cfg.Token)
 	}
-	dl := newHTTPClient(cfg, 25*time.Second)
+	dl := newHTTPClient(cfg, 25*time.Second, log)
 	t0 := time.Now()
 	r2, err := dl.Do(req)
 	if err != nil {

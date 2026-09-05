@@ -34,8 +34,8 @@ func cmdPrefetch(ctx context.Context, args []string) error {
 	st := loadState()
 	recent := st.recentSet()
 
-	dl := newHTTPClient(cfg, time.Duration(cfg.TimeoutSeconds)*time.Second)
-	client := NewClient(cfg, newHTTPClient(cfg, 15*time.Second), log)
+	dl := newHTTPClient(cfg, time.Duration(cfg.TimeoutSeconds)*time.Second, log)
+	client := NewClient(cfg, newHTTPClient(cfg, 15*time.Second, log), log)
 
 	for attempt := 0; attempt < cfg.Retries; attempt++ {
 		resp, base, err := client.Search(ctx, cfg.Search, st.LastEndpoint)

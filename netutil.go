@@ -22,6 +22,7 @@ type ipDialer struct {
 	base   *net.Dialer
 	pool   []string
 	fronts func(host string) bool
+	log    *logger
 }
 
 func (d *ipDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -38,10 +39,16 @@ func (d *ipDialer) DialContext(ctx context.Context, network, addr string) (net.C
 		if ip == "" || net.ParseIP(ip) == nil {
 			continue
 		}
-		conn, e := d.base.DialContext(ctx, network, net.JoinHostPort(ip, port))
+		// Bound each attempt so a dead or stalled IP in the pool is skipped in a
+		// few seconds instead of eating the whole request timeout.
+		actx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		conn, e := d.base.DialContext(actx, network, net.JoinHostPort(ip, port))
+		cancel()
 		if e == nil {
+			d.log.Debugf("front %s → %s (best_cf pool %d)", host, ip, len(d.pool))
 			return conn, nil
 		}
+		d.log.Debugf("front %s via %s failed: %v", host, ip, e)
 		lastErr = e
 	}
 	if lastErr != nil {
@@ -106,7 +113,7 @@ func endpointHosts(endpoints []string) map[string]bool {
 	return set
 }
 
-func newHTTPClient(cfg Config, timeout time.Duration) *http.Client {
+func newHTTPClient(cfg Config, timeout time.Duration, log *logger) *http.Client {
 	tr := &http.Transport{
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          8,
@@ -117,15 +124,23 @@ func newHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 		DisableCompression:    false,
 	}
 	dialer := &net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}
-	if pool := resolveIPPool(cfg.BestCFDomain); len(pool) > 0 {
-		fronts := endpointHosts(cfg.Endpoints)
-		tr.DialContext = (&ipDialer{
-			base: dialer,
-			pool: pool,
-			fronts: func(host string) bool {
-				return isWallhavenHost(host) || fronts[host]
-			},
-		}).DialContext
+	if cfg.BestCFDomain != "" {
+		pool := resolveIPPool(cfg.BestCFDomain)
+		if len(pool) > 0 {
+			log.Debugf("best_cf fronting active: %s → %d IPs", cfg.BestCFDomain, len(pool))
+			fronts := endpointHosts(cfg.Endpoints)
+			tr.DialContext = (&ipDialer{
+				base: dialer,
+				pool: pool,
+				fronts: func(host string) bool {
+					return isWallhavenHost(host) || fronts[host]
+				},
+				log: log,
+			}).DialContext
+		} else {
+			log.Warnf("best_cf_domain %s resolved to no IPs — dialing normally", cfg.BestCFDomain)
+			tr.DialContext = dialer.DialContext
+		}
 	} else {
 		tr.DialContext = dialer.DialContext
 	}
