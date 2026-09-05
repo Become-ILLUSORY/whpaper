@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -130,31 +131,54 @@ func cmdProbe(ctx context.Context, args []string) error {
 		fmt.Printf("\nbest_cf_domain %s → %d IPs (fronting SNI %s)\n", cfg.BestCFDomain, len(pool), sni)
 		if len(pool) == 0 {
 			fmt.Println("  (no A/AAAA records resolved)")
-		} else if sni != "" {
+		} else {
 			type ipResult struct {
 				ip  string
 				d   time.Duration
 				err error
 			}
-			var list []ipResult
-			for _, ip := range pool {
-				d, err := dialTLSLatency(ctx, ip, sni, 5*time.Second)
-				list = append(list, ipResult{ip: ip, d: d, err: err})
+			results := make([]ipResult, len(pool))
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, 16)
+			for i, ip := range pool {
+				wg.Add(1)
+				go func(i int, ip string) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					d, err := dialTLSLatency(cctx, ip, sni, 5*time.Second)
+					results[i] = ipResult{ip: ip, d: d, err: err}
+				}(i, ip)
 			}
-			sort.SliceStable(list, func(i, j int) bool {
-				badI, badJ := list[i].err != nil, list[j].err != nil
-				if badI != badJ {
-					return !badI
+			wg.Wait()
+			sort.SliceStable(results, func(i, j int) bool {
+				bi, bj := results[i].err != nil, results[j].err != nil
+				if bi != bj {
+					return !bi
 				}
-				return list[i].d < list[j].d
+				return results[i].d < results[j].d
 			})
-			for _, r := range list {
+			reachable, dead := 0, 0
+			for _, r := range results {
 				if r.err != nil {
+					dead++
 					fmt.Printf("  %-22s ✗ %v\n", r.ip, r.err)
 					continue
 				}
+				reachable++
 				fmt.Printf("  %-22s ✓ %dms\n", r.ip, r.d.Milliseconds())
 			}
+			summary := fmt.Sprintf("pool health: %d/%d reachable", reachable, len(results))
+			if reachable > 0 {
+				summary += fmt.Sprintf(", fastest %dms, slowest ok %dms",
+					results[0].d.Milliseconds(), results[reachable-1].d.Milliseconds())
+			}
+			if dead > 0 {
+				summary += fmt.Sprintf(", %d dead", dead)
+			}
+			fmt.Println("\n" + summary)
 		}
 	}
 
