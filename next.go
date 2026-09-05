@@ -63,6 +63,11 @@ func cmdNext(ctx context.Context, args []string) error {
 
 // runPipeline is shared by next / prefetch / watch.
 func runPipeline(ctx context.Context, cfg Config, o *opts, log *logger, count int) ([]Result, error) {
+	// Instant acknowledgement: ranking the优选 pool and the search itself take a
+	// second or two, so don't leave the user staring at nothing. replace-id makes
+	// this morph into "开始下载" and then the result instead of stacking up.
+	notify(ctx, cfg, log, "正在获取壁纸", "连接 wallhaven 并挑选中…", "preferences-desktop-wallpaper")
+
 	dir := resolveDirectory(ctx, cfg)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
