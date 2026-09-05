@@ -599,10 +599,6 @@ func xdgPicturesDir() string {
 	if v := strings.TrimSpace(os.Getenv("XDG_PICTURES_DIR")); v != "" {
 		return expandPath(v)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
 	data, err := os.ReadFile(filepath.Join(configHome(), "user-dirs.dirs"))
 	if err != nil {
 		return ""
