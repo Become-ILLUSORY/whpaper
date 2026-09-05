@@ -122,7 +122,7 @@ func newFlagSet(name string, o *opts, extra func(*flag.FlagSet)) *flag.FlagSet {
 	fs.StringVar(&o.endpoint, "endpoint", "", "force a single API base URL (bypasses failover)")
 	fs.StringVar(&o.directory, "dir", "", "directory to store wallpapers in")
 	fs.StringVar(&o.connector, "connector", "", "noctalia output name, e.g. DP-1 (empty = all monitors)")
-	fs.StringVar(&o.bestCF, "best-cf", "", "hostname whose A records are your preferred Cloudflare IPs")
+	fs.StringVar(&o.bestCF, "best-cf", "", "comma-separated hostnames whose A records are your preferred Cloudflare IPs")
 	fs.StringVar(&o.resolutions, "resolutions", "", "exact resolution list, e.g. 3840x2160,2560x1440")
 	fs.StringVar(&o.ratios, "ratios", "", "aspect ratio list, e.g. 16x9")
 	fs.StringVar(&o.categories, "categories", "", "3-digit mask general/anime/people (1 = include)")
@@ -191,7 +191,7 @@ Advanced flags:
   -dry-run           resolve without downloading  -json      machine-readable output
   -auto-resolution   derive sizes from monitors   -force     ignore recent dedup
   -endpoint URL      pin one API base             -config p  alternate config file
-  -best-cf domain    front requests through a hostname whose A records are your
+  -best-cf a,b       front requests through hostnames whose A records are your
                      preferred Cloudflare IPs (see "best_cf_domain" in config)
 
 Examples:

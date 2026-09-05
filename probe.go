@@ -122,16 +122,18 @@ func cmdProbe(ctx context.Context, args []string) error {
 		reps = append(reps, rep)
 	}
 
-	if cfg.BestCFDomain != "" {
-		pool := resolveIPPool(cfg.BestCFDomain)
+	if len(cfg.BestCFDomains) > 0 {
 		sni := ""
 		if len(cfg.Endpoints) > 0 {
 			sni = hostOf(cfg.Endpoints[0])
 		}
-		fmt.Printf("\nbest_cf_domain %s → %d IPs (fronting SNI %s)\n", cfg.BestCFDomain, len(pool), sni)
-		if len(pool) == 0 {
-			fmt.Println("  (no A/AAAA records resolved)")
-		} else {
+		for _, domain := range cfg.BestCFDomains {
+			pool := resolveIPPool(domain)
+			fmt.Printf("\nbest_cf_domain %s → %d IPs (fronting SNI %s)\n", domain, len(pool), sni)
+			if len(pool) == 0 {
+				fmt.Println("  (no A/AAAA records resolved)")
+				continue
+			}
 			type ipResult struct {
 				ip  string
 				d   time.Duration

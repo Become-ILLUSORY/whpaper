@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -278,11 +279,15 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		checks = append(checks, check{"notify-send", false, "optional"})
 	}
 
-	if cfg.BestCFDomain != "" {
-		pool := resolveIPPool(cfg.BestCFDomain)
+	if len(cfg.BestCFDomains) > 0 {
+		union := unionPool(cfg.BestCFDomains)
+		detail := make([]string, 0, len(cfg.BestCFDomains))
+		for _, d := range cfg.BestCFDomains {
+			detail = append(detail, fmt.Sprintf("%s(%d)", d, len(resolveIPPool(d))))
+		}
 		checks = append(checks, check{
-			"best_cf_domain", len(pool) > 0,
-			fmt.Sprintf("%s → %d IPs", cfg.BestCFDomain, len(pool)),
+			"best_cf_domain", len(union) > 0,
+			fmt.Sprintf("%s → %d IPs", strings.Join(detail, " + "), len(union)),
 		})
 	}
 

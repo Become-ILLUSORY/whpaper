@@ -207,14 +207,14 @@ var (
 )
 
 func frontingPool(cfg Config, log *logger) []string {
-	if cfg.BestCFDomain == "" {
+	if len(cfg.BestCFDomains) == 0 {
 		return nil
 	}
-	raw := resolveIPPool(cfg.BestCFDomain)
+	raw := unionPool(cfg.BestCFDomains)
 	if len(raw) <= 1 {
 		return raw
 	}
-	key := cfg.BestCFDomain
+	key := strings.Join(cfg.BestCFDomains, ",")
 	frontMu.Lock()
 	if e, ok := frontCache[key]; ok && time.Since(e.at) < 10*time.Minute {
 		frontMu.Unlock()
@@ -227,6 +227,22 @@ func frontingPool(cfg Config, log *logger) []string {
 	frontCache[key] = poolEntry{ips: ordered, at: time.Now()}
 	frontMu.Unlock()
 	return ordered
+}
+
+// unionPool resolves every best_cf domain and merges the IPs (deduped, order
+// preserved) so several优选 pools can be combined.
+func unionPool(domains []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range domains {
+		for _, ip := range resolveIPPool(d) {
+			if !seen[ip] {
+				seen[ip] = true
+				out = append(out, ip)
+			}
+		}
+	}
+	return out
 }
 
 // orderIPsByLatency dials every IP in parallel (TLS handshake to a wallhaven
@@ -301,10 +317,11 @@ func newHTTPClient(cfg Config, timeout time.Duration, log *logger) *http.Client 
 		DisableCompression:    false,
 	}
 	dialer := &net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}
-	if cfg.BestCFDomain != "" {
+	if len(cfg.BestCFDomains) > 0 {
 		pool := frontingPool(cfg, log)
+		domains := strings.Join(cfg.BestCFDomains, ", ")
 		if len(pool) > 0 {
-			log.Debugf("best_cf fronting active: %s → %d IPs", cfg.BestCFDomain, len(pool))
+			log.Debugf("best_cf fronting active: %s → %d IPs", domains, len(pool))
 			fronts := endpointHosts(cfg.Endpoints)
 			tr.DialContext = (&ipDialer{
 				base: dialer,
@@ -315,7 +332,7 @@ func newHTTPClient(cfg Config, timeout time.Duration, log *logger) *http.Client 
 				log: log,
 			}).DialContext
 		} else {
-			log.Warnf("best_cf_domain %s resolved to no IPs — dialing normally", cfg.BestCFDomain)
+			log.Warnf("best_cf_domain %s resolved to no IPs — dialing normally", domains)
 			tr.DialContext = dialer.DialContext
 		}
 	} else {

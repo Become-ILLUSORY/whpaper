@@ -14,6 +14,53 @@ import (
 	"time"
 )
 
+// stringList lets a config field be written as either a single string or an
+// array of strings, e.g. "best_cf_domain": "a.com" or ["a.com", "b.com"].
+type stringList []string
+
+func (l *stringList) UnmarshalJSON(data []byte) error {
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		if s := strings.TrimSpace(one); s != "" {
+			*l = stringList{s}
+		} else {
+			*l = nil
+		}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	cleaned := make(stringList, 0, len(many))
+	for _, s := range many {
+		if s = strings.TrimSpace(s); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	*l = cleaned
+	return nil
+}
+
+func (l stringList) MarshalJSON() ([]byte, error) {
+	if len(l) == 0 {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]string(l))
+}
+
+// splitCSV turns "a, b ,c" into ["a","b","c"], dropping blanks.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // SearchConfig maps onto the wallhaven /api/v1/search query parameters that are
 // worth exposing to users. Empty fields are omitted from the request.
 type SearchConfig struct {
@@ -51,10 +98,11 @@ type Config struct {
 	Keep      int    `json:"keep,omitempty"`      // downloaded files to retain
 	Notify    bool   `json:"notify"`              // desktop notification on change
 
-	// BestCFDomain is a hostname whose A/AAAA records are Cloudflare IPs that
-	// work from your network (a "优选 IP" pool). When set, every wallhaven/mirror
-	// request is dialed through those IPs with the real SNI — no VPN needed.
-	BestCFDomain string `json:"best_cf_domain,omitempty"`
+	// BestCFDomains are hostnames whose A/AAAA records are Cloudflare IPs that
+	// work from your network (a "优选 IP" pool). Accepts one string or a list.
+	// When set, every wallhaven/mirror request is dialed through the union of
+	// those IPs with the real SNI — no VPN needed.
+	BestCFDomains stringList `json:"best_cf_domain,omitempty"`
 
 	// ---- runtime-only (flags / env / defaults), not part of the config file ----
 	Apply          bool   `json:"-"`
@@ -248,7 +296,7 @@ func (c *Config) applyEnv() {
 		c.Proxy = v
 	}
 	if v := strings.TrimSpace(os.Getenv("WHPAPER_BEST_CF_DOMAIN")); v != "" {
-		c.BestCFDomain = v
+		c.BestCFDomains = splitCSV(v)
 	}
 	if v := strings.TrimSpace(os.Getenv("WHPAPER_KEEP")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -307,7 +355,7 @@ func buildConfig(o *opts) (Config, error) {
 		cfg.Connector = o.connector
 	}
 	if o.bestCF != "" {
-		cfg.BestCFDomain = strings.TrimSpace(o.bestCF)
+		cfg.BestCFDomains = splitCSV(o.bestCF)
 	}
 	if o.keep > 0 {
 		cfg.Keep = o.keep
