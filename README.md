@@ -115,7 +115,14 @@ wallhaven 在 CN 不可直连，两条路（可叠加）：
 { "best_cf_domain": "best.example.com" }
 ```
 
-whpaper 会解析该域名的 A/AAAA 记录，用这些 IP 去拨号，同时保持真实 SNI/Host（证书照常校验）。这对 `wallhaven.cc` 和镜像域名都生效。`whpaper probe` 会逐个测这批 IP 的握手延迟。
+whpaper 会解析该域名的 A/AAAA 记录，用这些 IP 去拨号，同时保持真实 SNI/Host（证书照常校验）。这对 `wallhaven.cc` 和镜像域名都生效。
+
+两个细节：
+
+- **解析走 DoH 兜底**：域名挂了几十个 A 记录时，本机 resolver（glibc / systemd-resolved）常只回两三个。whpaper 会同时用 DoH（AliDNS / Cloudflare / Google，可用 `WHPAPER_DOH` 覆盖）拉取完整记录并与系统结果合并，保证拿到整池。
+- **按延迟排序拨号**：启动时并行测一遍池内 IP 的握手延迟（缓存 10 分钟），之后**永远先拨最快的**，慢/不通的垫底兜底，避免随机踩到烂 IP。
+
+`whpaper probe` 会逐个测这批 IP 的握手延迟并排序打印。
 
 ### 3. 普通代理
 

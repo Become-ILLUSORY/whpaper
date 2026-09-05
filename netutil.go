@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -82,22 +85,117 @@ func resolveIPPool(domain string) []string {
 	}
 	poolMu.Unlock()
 
+	seen := map[string]bool{}
+	var out []string
+	add := func(ips []string) {
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if ip == "" || seen[ip] || net.ParseIP(ip) == nil {
+				continue
+			}
+			seen[ip] = true
+			out = append(out, ip)
+		}
+	}
+	// System resolver first (fast, no TLS), then DoH to recover records the local
+	// resolver truncates or withholds — a hostname with dozens of A records often
+	// comes back as 2-3 from glibc/systemd-resolved but in full over DoH.
+	add(systemHosts(domain))
+	add(dohHosts(domain))
+
+	poolMu.Lock()
+	poolCache[domain] = poolEntry{ips: out, at: time.Now()}
+	poolMu.Unlock()
+	return out
+}
+
+func systemHosts(domain string) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	looked, err := net.DefaultResolver.LookupHost(ctx, domain)
+	ips, err := net.DefaultResolver.LookupHost(ctx, domain)
 	if err != nil {
 		return nil
 	}
-	ips := make([]string, 0, len(looked))
-	for _, ip := range looked {
-		if net.ParseIP(ip) != nil {
-			ips = append(ips, ip)
-		}
-	}
-	poolMu.Lock()
-	poolCache[domain] = poolEntry{ips: ips, at: time.Now()}
-	poolMu.Unlock()
 	return ips
+}
+
+// dohClient is deliberately plain (no fronting — that would be circular) but it
+// honours HTTPS_PROXY so it works behind a tunnel too.
+var dohClient = &http.Client{
+	Timeout:   3 * time.Second,
+	Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+}
+
+func dohServers() []string {
+	if v := strings.TrimSpace(os.Getenv("WHPAPER_DOH")); v != "" {
+		var list []string
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				list = append(list, s)
+			}
+		}
+		return list
+	}
+	// AliDNS first: reachable from mainland China without a VPN. Cloudflare and
+	// Google cover the rest of the world.
+	return []string{
+		"https://dns.alidns.com/resolve",
+		"https://cloudflare-dns.com/dns-query",
+		"https://dns.google/resolve",
+	}
+}
+
+// dohHosts queries the DoH resolvers in parallel and unions their A/AAAA answers.
+func dohHosts(domain string) []string {
+	type answer struct {
+		Type int    `json:"type"`
+		Data string `json:"data"`
+	}
+	type payload struct {
+		Answer []answer `json:"Answer"`
+	}
+
+	var (
+		mu  sync.Mutex
+		out []string
+		wg  sync.WaitGroup
+	)
+	for _, ep := range dohServers() {
+		wg.Add(1)
+		go func(ep string) {
+			defer wg.Done()
+			u := ep + "?name=" + url.QueryEscape(domain) + "&type=A"
+			req, err := http.NewRequest(http.MethodGet, u, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("accept", "application/dns-json")
+			resp, err := dohClient.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if err != nil {
+				return
+			}
+			var p payload
+			if json.Unmarshal(body, &p) != nil {
+				return
+			}
+			var ips []string
+			for _, a := range p.Answer {
+				if a.Type == 1 || a.Type == 28 {
+					ips = append(ips, a.Data)
+				}
+			}
+			mu.Lock()
+			out = append(out, ips...)
+			mu.Unlock()
+		}(ep)
+	}
+	wg.Wait()
+	return out
 }
 
 // frontingPool returns the best_cf IP pool ordered fastest-first, so a run stops
