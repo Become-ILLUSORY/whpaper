@@ -146,6 +146,14 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 				return &r, nil
 			}
 
+			// Give feedback before a possibly multi-second network fetch (a cached
+			// file resolves instantly, so skip the notice then).
+			if findExisting(dir, w) == "" {
+				if _, e := os.Stat(stagePath(expandUser(cfg.StagingDir), w)); e != nil {
+					notify(ctx, cfg, log, "开始下载", wallpaperSummary(w), "folder-download")
+				}
+			}
+
 			path, source, bytes, err := acquire(ctx, cfg, log, dir, base, w, dl)
 			if err != nil {
 				log.Debugf("candidate %s failed: %v", w.ID, err)
@@ -198,7 +206,8 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 	if lastApplyErr != nil {
 		err = fmt.Errorf("no wallpaper could be fetched (last apply error: %v)", lastApplyErr)
 	}
-	notify(ctx, cfg, log, "壁纸切换失败", friendlyFailure(err), "dialog-warning")
+	ftitle, fbody := failureNotice(err)
+	notify(ctx, cfg, log, ftitle, fbody, "dialog-warning")
 	return nil, err
 }
 
@@ -230,22 +239,22 @@ func prettyResolution(r string) string {
 	return strings.ReplaceAll(r, "x", " × ")
 }
 
-// friendlyFailure turns a raw error into a short, actionable Chinese hint.
-func friendlyFailure(err error) string {
-	msg := err.Error()
-	low := strings.ToLower(msg)
+// failureNotice maps a raw error to a short (title, body) for the failure popup.
+func failureNotice(err error) (string, string) {
+	low := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(low, "403") || strings.Contains(low, "token"):
-		return "反代口令无效，请检查 token 配置"
+		return "下载失败", "反代口令无效，请检查 token 配置"
 	case strings.Contains(low, "no such host") || strings.Contains(low, "dial") ||
-		strings.Contains(low, "timeout") || strings.Contains(low, "connection"):
-		return "网络不可达，可尝试配置镜像或代理"
-	case strings.Contains(msg, "not found in PATH") || strings.Contains(low, "noctalia"):
-		return "未找到 Noctalia，或桌面未运行"
+		strings.Contains(low, "timeout") || strings.Contains(low, "connection") ||
+		strings.Contains(low, "reset"):
+		return "下载失败", "网络不可达，可尝试镜像或优选 IP（whpaper probe 体检）"
+	case strings.Contains(low, "not found in path") || strings.Contains(low, "noctalia"):
+		return "切换失败", "未找到 Noctalia，或桌面未运行"
 	case strings.Contains(low, "empty result") || strings.Contains(low, "filters"):
-		return "筛选条件过窄，没有匹配的壁纸"
+		return "下载失败", "筛选条件过窄，没有匹配的壁纸"
 	default:
-		return "获取失败，运行 whpaper next -v 查看详情"
+		return "下载失败", "获取失败，运行 whpaper next -v 查看详情"
 	}
 }
 
