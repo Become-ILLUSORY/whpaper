@@ -150,7 +150,7 @@ func cmdProbe(ctx context.Context, args []string) error {
 					defer func() { <-sem }()
 					cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					d, err := dialTLSLatency(cctx, ip, sni, 5*time.Second)
+					d, err := httpProbeLatency(cctx, ip, sni, 5*time.Second)
 					results[i] = ipResult{ip: ip, d: d, err: err}
 				}(i, ip)
 			}

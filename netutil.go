@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type ipDialer struct {
 	pool   []string
 	fronts func(host string) bool
 	log    *logger
+	cursor uint32 // rotates the starting IP so retries don't wedge on one bad host
 }
 
 func (d *ipDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -37,9 +39,13 @@ func (d *ipDialer) DialContext(ctx context.Context, network, addr string) (net.C
 		return d.base.DialContext(ctx, network, addr)
 	}
 	var lastErr error
-	// d.pool is ordered fastest-first (see frontingPool); try in that order.
-	for _, candidate := range d.pool {
-		ip := strings.TrimSpace(candidate)
+	// d.pool is ordered fastest-first (see frontingPool). Start each new dial at
+	// a rotating offset so a single IP that TCP-connects but resets the request
+	// cannot wedge every retry — the next attempt naturally tries the next IP.
+	n := len(d.pool)
+	start := int(atomic.AddUint32(&d.cursor, 1)-1) % n
+	for k := 0; k < n; k++ {
+		ip := strings.TrimSpace(d.pool[(start+k)%n])
 		if ip == "" || net.ParseIP(ip) == nil {
 			continue
 		}
@@ -214,7 +220,15 @@ func frontingPool(cfg Config, log *logger) []string {
 	if len(raw) <= 1 {
 		return raw
 	}
-	key := strings.Join(cfg.BestCFDomains, ",")
+	// Probe the host we will actually front (the primary endpoint), so an IP that
+	// only serves some other name is not falsely ranked good.
+	probeHost := "wallhaven.cc"
+	if len(cfg.Endpoints) > 0 {
+		if h := hostOf(cfg.Endpoints[0]); h != "" {
+			probeHost = h
+		}
+	}
+	key := strings.Join(cfg.BestCFDomains, ",") + "|" + probeHost
 	frontMu.Lock()
 	if e, ok := frontCache[key]; ok && time.Since(e.at) < 10*time.Minute {
 		frontMu.Unlock()
@@ -222,7 +236,7 @@ func frontingPool(cfg Config, log *logger) []string {
 	}
 	frontMu.Unlock()
 
-	ordered := orderIPsByLatency(raw, log)
+	ordered := orderIPsByLatency(raw, probeHost, log)
 	frontMu.Lock()
 	frontCache[key] = poolEntry{ips: ordered, at: time.Now()}
 	frontMu.Unlock()
@@ -245,10 +259,12 @@ func unionPool(domains []string) []string {
 	return out
 }
 
-// orderIPsByLatency dials every IP in parallel (TLS handshake to a wallhaven
-// SNI, which is the same CF anycast the mirror uses) and returns them fastest
-// first, unreachable ones last so they remain as a fallback.
-func orderIPsByLatency(ips []string, log *logger) []string {
+// orderIPsByLatency probes every IP in parallel with a real HTTPS request to
+// wallhaven.cc and returns them fastest-first, unreachable ones last. A plain
+// TLS handshake is not enough: some IPs (e.g. a proxy service that is not a
+// Cloudflare pool) finish the handshake but reset the HTTP request, so we must
+// exercise the full request path to rank honestly.
+func orderIPsByLatency(ips []string, probeHost string, log *logger) []string {
 	type res struct {
 		ip string
 		d  time.Duration
@@ -260,9 +276,9 @@ func orderIPsByLatency(ips []string, log *logger) []string {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			d, err := dialTLSLatency(ctx, ip, "wallhaven.cc", 2500*time.Millisecond)
+			d, err := httpProbeLatency(ctx, ip, probeHost, 3*time.Second)
 			ch <- res{ip: ip, d: d, ok: err == nil}
 		}(ip)
 	}
@@ -389,29 +405,40 @@ func rewriteImageURL(apiBase, asset string) string {
 	return out.String()
 }
 
-// dialTLSLatency measures TCP connect + TLS handshake to ip, advertising hostname
-// as SNI. Used by `probe` to rank fronting IPs.
-func dialTLSLatency(ctx context.Context, ip, hostname string, timeout time.Duration) (time.Duration, error) {
+// httpProbeLatency performs a real HTTPS GET to https://<hostname>/ through a
+// specific IP (keeping the true SNI and certificate verification) and returns the
+// round-trip time. Unlike a bare TLS handshake it catches IPs that complete the
+// handshake but reset the HTTP request — the failure mode of a non-Cloudflare
+// "proxy" pool masquerading as a优选 IP list.
+func httpProbeLatency(ctx context.Context, ip, hostname string, timeout time.Duration) (time.Duration, error) {
 	if net.ParseIP(ip) == nil {
 		return 0, fmt.Errorf("%q is not an IP literal", ip)
 	}
 	start := time.Now()
-	d := &net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "443"))
+	tr := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{ServerName: hostname},
+		DialContext: func(c context.Context, _, _ string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: timeout}
+			return d.DialContext(c, "tcp", net.JoinHostPort(ip, "443"))
+		},
+	}
+	cl := &http.Client{Transport: tr, Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+"/", nil)
 	if err != nil {
 		return 0, err
 	}
-	tc := tls.Client(conn, &tls.Config{
-		ServerName: hostname,
-		NextProtos: []string{"h2", "http/1.1"},
-	})
-	if err := tc.HandshakeContext(ctx); err != nil {
-		conn.Close()
+	req.Header.Set("Range", "bytes=0-0") // 1-byte body; not the rate-limited /api path
+	resp, err := cl.Do(req)
+	if err != nil {
 		return 0, err
 	}
-	elapsed := time.Since(start)
-	_ = tc.Close()
-	return elapsed, nil
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64))
+	if resp.StatusCode >= 500 {
+		return 0, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return time.Since(start), nil
 }
 
 func isTimeout(err error) bool {
