@@ -5,10 +5,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +34,9 @@ func (d *ipDialer) DialContext(ctx context.Context, network, addr string) (net.C
 		return d.base.DialContext(ctx, network, addr)
 	}
 	var lastErr error
-	for _, idx := range rand.Perm(len(d.pool)) {
-		ip := strings.TrimSpace(d.pool[idx])
+	// d.pool is ordered fastest-first (see frontingPool); try in that order.
+	for _, candidate := range d.pool {
+		ip := strings.TrimSpace(candidate)
 		if ip == "" || net.ParseIP(ip) == nil {
 			continue
 		}
@@ -99,6 +100,84 @@ func resolveIPPool(domain string) []string {
 	return ips
 }
 
+// frontingPool returns the best_cf IP pool ordered fastest-first, so a run stops
+// landing on a slow or half-dead IP at random. Latencies are measured once and
+// cached for a few minutes.
+var (
+	frontMu    sync.Mutex
+	frontCache = map[string]poolEntry{}
+)
+
+func frontingPool(cfg Config, log *logger) []string {
+	if cfg.BestCFDomain == "" {
+		return nil
+	}
+	raw := resolveIPPool(cfg.BestCFDomain)
+	if len(raw) <= 1 {
+		return raw
+	}
+	key := cfg.BestCFDomain
+	frontMu.Lock()
+	if e, ok := frontCache[key]; ok && time.Since(e.at) < 10*time.Minute {
+		frontMu.Unlock()
+		return e.ips
+	}
+	frontMu.Unlock()
+
+	ordered := orderIPsByLatency(raw, log)
+	frontMu.Lock()
+	frontCache[key] = poolEntry{ips: ordered, at: time.Now()}
+	frontMu.Unlock()
+	return ordered
+}
+
+// orderIPsByLatency dials every IP in parallel (TLS handshake to a wallhaven
+// SNI, which is the same CF anycast the mirror uses) and returns them fastest
+// first, unreachable ones last so they remain as a fallback.
+func orderIPsByLatency(ips []string, log *logger) []string {
+	type res struct {
+		ip string
+		d  time.Duration
+		ok bool
+	}
+	ch := make(chan res, len(ips))
+	var wg sync.WaitGroup
+	for _, ip := range ips {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			defer cancel()
+			d, err := dialTLSLatency(ctx, ip, "wallhaven.cc", 2500*time.Millisecond)
+			ch <- res{ip: ip, d: d, ok: err == nil}
+		}(ip)
+	}
+	wg.Wait()
+	close(ch)
+
+	var good, bad []res
+	for r := range ch {
+		if r.ok {
+			good = append(good, r)
+		} else {
+			bad = append(bad, r)
+		}
+	}
+	sort.SliceStable(good, func(i, j int) bool { return good[i].d < good[j].d })
+	out := make([]string, 0, len(ips))
+	for _, r := range good {
+		out = append(out, r.ip)
+	}
+	for _, r := range bad {
+		out = append(out, r.ip)
+	}
+	if len(good) > 0 {
+		log.Debugf("best_cf pool ranked: %s (%dms) … %d reachable / %d total",
+			good[0].ip, good[0].d.Milliseconds(), len(good), len(ips))
+	}
+	return out
+}
+
 // endpointHosts returns the bare hostnames of the configured endpoints so the
 // dialer knows which non-wallhaven hosts (a self-hosted mirror) to front.
 func endpointHosts(endpoints []string) map[string]bool {
@@ -125,7 +204,7 @@ func newHTTPClient(cfg Config, timeout time.Duration, log *logger) *http.Client 
 	}
 	dialer := &net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}
 	if cfg.BestCFDomain != "" {
-		pool := resolveIPPool(cfg.BestCFDomain)
+		pool := frontingPool(cfg, log)
 		if len(pool) > 0 {
 			log.Debugf("best_cf fronting active: %s → %d IPs", cfg.BestCFDomain, len(pool))
 			fronts := endpointHosts(cfg.Endpoints)
