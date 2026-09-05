@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -128,7 +129,7 @@ func systemHosts(domain string) []string {
 // dohClient is deliberately plain (no fronting — that would be circular) but it
 // honours HTTPS_PROXY so it works behind a tunnel too.
 var dohClient = &http.Client{
-	Timeout:   3 * time.Second,
+	Timeout:   1500 * time.Millisecond,
 	Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 }
 
@@ -151,8 +152,31 @@ func dohServers() []string {
 	}
 }
 
-// dohHosts queries the DoH resolvers in parallel and unions their A/AAAA answers.
+// dohHosts races the configured DoH resolvers and returns the first full answer.
+// In mainland China AliDNS answers in ~200ms while Cloudflare/Google time out, so
+// racing (instead of waiting for all) keeps resolution fast.
 func dohHosts(domain string) []string {
+	servers := dohServers()
+	ch := make(chan []string, len(servers))
+	for _, ep := range servers {
+		go func(ep string) { ch <- dohQuery(ep, domain) }(ep)
+	}
+	deadline := time.After(1600 * time.Millisecond)
+	for i := 0; i < len(servers); i++ {
+		select {
+		case ips := <-ch:
+			if len(ips) > 0 {
+				return ips
+			}
+		case <-deadline:
+			return nil
+		}
+	}
+	return nil
+}
+
+// dohQuery asks one DoH resolver for a domain's A/AAAA records.
+func dohQuery(ep, domain string) []string {
 	type answer struct {
 		Type int    `json:"type"`
 		Data string `json:"data"`
@@ -160,48 +184,32 @@ func dohHosts(domain string) []string {
 	type payload struct {
 		Answer []answer `json:"Answer"`
 	}
-
-	var (
-		mu  sync.Mutex
-		out []string
-		wg  sync.WaitGroup
-	)
-	for _, ep := range dohServers() {
-		wg.Add(1)
-		go func(ep string) {
-			defer wg.Done()
-			u := ep + "?name=" + url.QueryEscape(domain) + "&type=A"
-			req, err := http.NewRequest(http.MethodGet, u, nil)
-			if err != nil {
-				return
-			}
-			req.Header.Set("accept", "application/dns-json")
-			resp, err := dohClient.Do(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			if err != nil {
-				return
-			}
-			var p payload
-			if json.Unmarshal(body, &p) != nil {
-				return
-			}
-			var ips []string
-			for _, a := range p.Answer {
-				if a.Type == 1 || a.Type == 28 {
-					ips = append(ips, a.Data)
-				}
-			}
-			mu.Lock()
-			out = append(out, ips...)
-			mu.Unlock()
-		}(ep)
+	u := ep + "?name=" + url.QueryEscape(domain) + "&type=A"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil
 	}
-	wg.Wait()
-	return out
+	req.Header.Set("accept", "application/dns-json")
+	resp, err := dohClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil
+	}
+	var p payload
+	if json.Unmarshal(body, &p) != nil {
+		return nil
+	}
+	var ips []string
+	for _, a := range p.Answer {
+		if a.Type == 1 || a.Type == 28 {
+			ips = append(ips, a.Data)
+		}
+	}
+	return ips
 }
 
 // frontingPool returns the best_cf IP pool ordered fastest-first, so a run stops
@@ -216,10 +224,6 @@ func frontingPool(cfg Config, log *logger) []string {
 	if len(cfg.BestCFDomains) == 0 {
 		return nil
 	}
-	raw := unionPool(cfg.BestCFDomains)
-	if len(raw) <= 1 {
-		return raw
-	}
 	// Probe the host we will actually front (the primary endpoint), so an IP that
 	// only serves some other name is not falsely ranked good.
 	probeHost := "wallhaven.cc"
@@ -229,6 +233,7 @@ func frontingPool(cfg Config, log *logger) []string {
 		}
 	}
 	key := strings.Join(cfg.BestCFDomains, ",") + "|" + probeHost
+
 	frontMu.Lock()
 	if e, ok := frontCache[key]; ok && time.Since(e.at) < 10*time.Minute {
 		frontMu.Unlock()
@@ -236,20 +241,89 @@ func frontingPool(cfg Config, log *logger) []string {
 	}
 	frontMu.Unlock()
 
+	// On-disk cache: survives across runs so a systemd timer does not re-resolve
+	// and re-probe dozens of IPs every time. Stale entries are harmless — the
+	// dialer rotates and retries, and we refresh after a couple of hours.
+	if ips, ok := loadPoolDisk(key); ok {
+		frontMu.Lock()
+		frontCache[key] = poolEntry{ips: ips, at: time.Now()}
+		frontMu.Unlock()
+		log.Debugf("best_cf pool from disk cache: %d IPs", len(ips))
+		return ips
+	}
+
+	raw := unionPool(cfg.BestCFDomains)
+	if len(raw) <= 1 {
+		return raw
+	}
 	ordered := orderIPsByLatency(raw, probeHost, log)
 	frontMu.Lock()
 	frontCache[key] = poolEntry{ips: ordered, at: time.Now()}
 	frontMu.Unlock()
+	savePoolDisk(key, ordered)
 	return ordered
 }
 
+// ---------------------------------------------------------------- pool disk cache
+
+type poolDisk struct {
+	Key    string    `json:"key"`
+	Ranked []string  `json:"ranked"`
+	At     time.Time `json:"at"`
+}
+
+func poolCachePath() string {
+	return filepath.Join(cacheHome(), "whpaper", "pool.json")
+}
+
+func loadPoolDisk(key string) ([]string, bool) {
+	data, err := os.ReadFile(poolCachePath())
+	if err != nil {
+		return nil, false
+	}
+	var p poolDisk
+	if json.Unmarshal(data, &p) != nil {
+		return nil, false
+	}
+	if p.Key != key || len(p.Ranked) == 0 || time.Since(p.At) > 2*time.Hour {
+		return nil, false
+	}
+	return p.Ranked, true
+}
+
+func savePoolDisk(key string, ranked []string) {
+	data, err := json.Marshal(poolDisk{Key: key, Ranked: ranked, At: time.Now()})
+	if err != nil {
+		return
+	}
+	path := poolCachePath()
+	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
 // unionPool resolves every best_cf domain and merges the IPs (deduped, order
-// preserved) so several优选 pools can be combined.
+// preserved) so several优选 pools can be combined. Domains resolve in parallel so
+// a third slow/blocked one does not serialize behind the others.
 func unionPool(domains []string) []string {
+	per := make([][]string, len(domains))
+	var wg sync.WaitGroup
+	for i, d := range domains {
+		wg.Add(1)
+		go func(i int, d string) {
+			defer wg.Done()
+			per[i] = resolveIPPool(d)
+		}(i, d)
+	}
+	wg.Wait()
 	seen := map[string]bool{}
 	var out []string
-	for _, d := range domains {
-		for _, ip := range resolveIPPool(d) {
+	for _, ips := range per {
+		for _, ip := range ips {
 			if !seen[ip] {
 				seen[ip] = true
 				out = append(out, ip)
@@ -276,9 +350,9 @@ func orderIPsByLatency(ips []string, probeHost string, log *logger) []string {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			d, err := httpProbeLatency(ctx, ip, probeHost, 3*time.Second)
+			d, err := httpProbeLatency(ctx, ip, probeHost, 2*time.Second)
 			ch <- res{ip: ip, d: d, ok: err == nil}
 		}(ip)
 	}
