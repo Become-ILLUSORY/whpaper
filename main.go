@@ -92,6 +92,7 @@ type opts struct {
 	colors      string
 	query       string
 	sorting     string
+	topRange    string
 	keep        int
 	retries     int
 	timeout     int
@@ -130,7 +131,8 @@ func newFlagSet(name string, o *opts, extra func(*flag.FlagSet)) *flag.FlagSet {
 	fs.StringVar(&o.atleast, "atleast", "", "minimum resolution, e.g. 2560x1440 (mutually exclusive with -resolutions)")
 	fs.StringVar(&o.colors, "colors", "", "hex colour filter, e.g. 42413c or random")
 	fs.StringVar(&o.query, "q", "", "search terms")
-	fs.StringVar(&o.sorting, "sorting", "", "random | relevance | date_added | toplist | toplist-day ...")
+	fs.StringVar(&o.sorting, "sorting", "", "random | relevance | date_added | views | favorites | toplist")
+	fs.StringVar(&o.topRange, "top-range", "", "toplist time window: 1d 3d 1w 1M 3M 6M 1y (default 1M)")
 	fs.IntVar(&o.keep, "keep", 0, "how many downloaded wallpapers to retain (0 = config value)")
 	fs.IntVar(&o.retries, "retries", 0, "candidate attempts per run (0 = config value)")
 	fs.IntVar(&o.timeout, "timeout", 0, "per-request timeout in seconds (0 = config value)")

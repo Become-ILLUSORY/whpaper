@@ -111,6 +111,9 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 	var lastApplyErr error
 
 	maxPage := maxSearchPage
+	if strings.EqualFold(cfg.Search.Sorting, "toplist") {
+		maxPage = maxToplistPages
+	}
 	for attempt := 0; attempt < cfg.Retries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -226,6 +229,13 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 // the seed param (generates its own), but we still send a unique random seed
 // per call so no CDN/worker/edge cache can pin a stale "random" set.
 const maxSearchPage = 4000
+
+// maxToplistPages bounds how many pages of a deterministic toplist we'll draw
+// from per run. toplist is score-sorted and page 1 is the very top; retries jump
+// within these pages so rotation keeps picking high-quality wallpapers instead
+// of drifting into the long tail. 60 pages × 24 = the top ~1440, wide enough to
+// stay lively under a 400-entry recent window while still being "greatest hits".
+const maxToplistPages = 60
 
 func randSeed() string {
 	const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"

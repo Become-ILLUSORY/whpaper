@@ -74,8 +74,9 @@ type SearchConfig struct {
 	Query       string `json:"q"`
 
 	// Rarely-needed knobs: settable via flags/env, never written to the file.
-	Order    string `json:"-"`
-	TopRange string `json:"-"`
+	Order string `json:"-"`
+	// TopRange is the time window for sorting=toplist (1d/3d/1w/1M/3M/6M/1y).
+	TopRange string `json:"top_range"`
 	Page     int    `json:"-"`
 	// Seed varies the request URL so no CDN/edge cache can hand back the same
 	// "random" page forever. wallhaven ignores it for anonymous random sorting,
@@ -129,7 +130,8 @@ func defaultConfig() Config {
 	return Config{
 		Endpoints: []string{"https://wallhaven.cc"},
 		Search: SearchConfig{
-			Sorting:     "random",
+			Sorting:     "toplist",
+			TopRange:    "1M",
 			Purity:      "100",
 			Categories:  "110",
 			Ratios:      "16x9",
@@ -250,6 +252,10 @@ func applyDefaults(cfg *Config) {
 	}
 	if strings.TrimSpace(cfg.Search.Sorting) == "" {
 		cfg.Search.Sorting = def.Search.Sorting
+	}
+	// sorting=toplist requires a time window; fall back to the default if unset.
+	if strings.EqualFold(cfg.Search.Sorting, "toplist") && strings.TrimSpace(cfg.Search.TopRange) == "" {
+		cfg.Search.TopRange = def.Search.TopRange
 	}
 	for i, e := range cfg.Endpoints {
 		cfg.Endpoints[i] = strings.TrimRight(strings.TrimSpace(e), "/")
@@ -409,6 +415,9 @@ func buildConfig(o *opts) (Config, error) {
 	}
 	if o.sorting != "" {
 		s.Sorting = o.sorting
+	}
+	if o.topRange != "" {
+		s.TopRange = o.topRange
 	}
 
 	applyDefaults(&cfg)
