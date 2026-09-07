@@ -110,17 +110,23 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 	recent := st.recentSet()
 	var lastApplyErr error
 
+	maxPage := maxSearchPage
 	for attempt := 0; attempt < cfg.Retries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		s := cfg.Search
-		// Random seed + random page on every call: even though wallhaven rolls its
-		// own seed for anonymous random ordering, a unique URL means no CDN/edge/
-		// worker cache can hand back the same "random" 24 over and over (which is
-		// what was previously happening, locking everyone into "shown recently").
+		// Random seed on every call: wallhaven rolls its own seed anyway, but a
+		// unique URL means no CDN/edge cache can pin a stale "random" 24 (which
+		// is what previously locked everything into 'shown recently'). First call
+		// stays on page 1 to learn the real pool size (safe for narrow filters);
+		// retries jump to a random page within it for fresh candidates.
 		s.Seed = randSeed()
-		s.Page = rand.Intn(maxSearchPage) + 1
+		if attempt == 0 {
+			s.Page = 1
+		} else {
+			s.Page = rand.Intn(maxPage) + 1
+		}
 		resp, base, err := client.Search(ctx, s, st.LastEndpoint)
 		if err != nil {
 			lastErr := err
@@ -134,6 +140,9 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 				}
 			}
 			continue
+		}
+		if resp != nil && resp.Meta.LastPage > 0 && resp.Meta.LastPage < maxPage {
+			maxPage = resp.Meta.LastPage
 		}
 		st.LastEndpoint = base
 
