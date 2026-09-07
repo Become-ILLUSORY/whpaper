@@ -127,7 +127,10 @@ func buildQuery(s SearchConfig) url.Values {
 	set("colors", s.Colors)
 	set("q", s.Query)
 	set("topRange", s.TopRange)
-	if s.Page > 1 {
+	// Always send page and seed (even page 1 / a default) so the URL is unique
+	// per call and cannot be served a stale cached "random" page.
+	set("seed", s.Seed)
+	if s.Page > 0 {
 		q.Set("page", strconv.Itoa(s.Page))
 	}
 	return q

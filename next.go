@@ -115,7 +115,12 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 			return nil, ctx.Err()
 		}
 		s := cfg.Search
-		s.Page = 1
+		// Random seed + random page on every call: even though wallhaven rolls its
+		// own seed for anonymous random ordering, a unique URL means no CDN/edge/
+		// worker cache can hand back the same "random" 24 over and over (which is
+		// what was previously happening, locking everyone into "shown recently").
+		s.Seed = randSeed()
+		s.Page = rand.Intn(maxSearchPage) + 1
 		resp, base, err := client.Search(ctx, s, st.LastEndpoint)
 		if err != nil {
 			lastErr := err
@@ -214,6 +219,20 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 	ftitle, fbody := failureNotice(err)
 	notify(ctx, cfg, log, ftitle, fbody, "dialog-warning")
 	return nil, err
+}
+
+// maxSearchPage bounds random search pages. wallhaven random ordering ignores
+// the seed param (generates its own), but we still send a unique random seed
+// per call so no CDN/worker/edge cache can pin a stale "random" set.
+const maxSearchPage = 4000
+
+func randSeed() string {
+	const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 8)
+	for i := range b {
+		b[i] = alpha[rand.Intn(len(alpha))]
+	}
+	return string(b)
 }
 
 // wallpaperSummary is the human-facing notification body: category + resolution,

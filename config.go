@@ -77,6 +77,10 @@ type SearchConfig struct {
 	Order    string `json:"-"`
 	TopRange string `json:"-"`
 	Page     int    `json:"-"`
+	// Seed varies the request URL so no CDN/edge cache can hand back the same
+	// "random" page forever. wallhaven ignores it for anonymous random sorting,
+	// but a unique URL defeats any caching layer in front of it.
+	Seed string `json:"-"`
 }
 
 // Config is the user-facing file. Only the fields below appear in
