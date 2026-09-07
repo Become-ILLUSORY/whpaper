@@ -470,7 +470,12 @@ func rewriteImageURL(apiBase, asset string) string {
 	if err != nil || bu.Host == "" {
 		return asset
 	}
-	if au.Host == bu.Host || !isWallhavenHost(au.Host) {
+	// A wallhaven asset (w.wallhaven.cc / th.wallhaven.cc) is already on the right
+	// CDN host. Only redirect it onto a MIRROR when the API itself came from a
+	// non-wallhaven host (the mirror serves image bytes on its own domain). When
+	// the API came straight from wallhaven, rewriting to wallhaven.cc would 404 —
+	// the /full/... path only exists on w.wallhaven.cc.
+	if au.Host == bu.Host || !isWallhavenHost(au.Host) || isWallhavenHost(bu.Host) {
 		return asset
 	}
 	out := *au

@@ -165,14 +165,6 @@ func fetchOnce(ctx context.Context, cfg Config, o *opts, log *logger, dir string
 				return &r, nil
 			}
 
-			// Give feedback before a possibly multi-second network fetch (a cached
-			// file resolves instantly, so skip the notice then).
-			if findExisting(dir, w) == "" {
-				if _, e := os.Stat(stagePath(expandUser(cfg.StagingDir), w)); e != nil {
-					notify(ctx, cfg, log, "开始下载", wallpaperSummary(w), "folder-download")
-				}
-			}
-
 			path, source, bytes, err := acquire(ctx, cfg, log, dir, base, w, dl)
 			if err != nil {
 				log.Debugf("candidate %s failed: %v", w.ID, err)
